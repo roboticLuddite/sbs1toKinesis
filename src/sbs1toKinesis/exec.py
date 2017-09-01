@@ -8,36 +8,61 @@ import time
 import collections
 import json
 import sbs1
+import sys
 from boto import kinesis
 import boto.kinesis.exceptions
+from datetime import datetime
 import socket
 
 
 class sbs1ToKinesisStreamer (object):
     
     def startStreaming(self):
-        
+        print("Starting stream.")
         self.kinesisConn = kinesis.connect_to_region(self.connectionDetails['kinesis']['region'])
         
-        while True:                
-        
-            self.clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.clientsocket.connect((self.connectionDetails['sbs1']['host'], self.connectionDetails['sbs1']['port']))
+        while True:
+		
+			try: 
+				self.clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+				self.clientsocket.connect((self.connectionDetails['sbs1']['host'], self.connectionDetails['sbs1']['port']))
+			except:
+				print("Unable to find SBS1 stream. Waiting 5 seconds...")
+				time.sleep(5)
+				continue
+			
+			kinsisPutRecordsBufferFlushIndex = datetime.now().second
+			kinesisPutRecordBuffer = []			
+			
+
+
+			try: 
+				for rawSBS1String in self.linesplit():
+					#sys.stdout.write(rawSBS1String)
+					#sys.stdout.flush()
+					
+					processedSBS1 = sbs1.SBS1Message(rawSBS1String)
+					kinesisPutRecordBuffer.append({
+						"Data": json.dumps(processedSBS1.__dict__),
+						"PartitionKey": self.connectionDetails['kinesis']['partionKey']
+					})
+							
+					currentSecond = datetime.now().second						
+					if(currentSecond != kinsisPutRecordsBufferFlushIndex):
+						kinsisPutRecordsBufferFlushIndex = currentSecond
+						#print("purging buffer")
+						self.kinesisConn.put_records(kinesisPutRecordBuffer, self.connectionDetails['kinesis']['streamID'])
+						kinesisPutRecordBuffer = []
+			except:
+				print("Issue connecting to SBS1 socket. Waiting 5 seconds.")
+				time.sleep(5)		
+			print('restarting buffering')
+                        time.sleep(5)
             
-            for rawSBS1String in self.linesplit():                                
-                processedSBS1 = sbs1.SBS1Message(rawSBS1String)                                                
-                putResponse = self.kinesisConn.put_record(self.connectionDetails['kinesis']['streamID'],  
-                                                          json.dumps(processedSBS1.__dict__),
-                                                           self.connectionDetails['kinesis']['partionKey'])           
-                
-                                                                           
-            print('restarting buffering')
-            
-                
     def linesplit(self):
         
         try:
-            buffer = self.clientsocket.recv(4096)            
+            buffer = self.clientsocket.recv(100)            
         except ValueError:            
             return          
         buffering = True
@@ -46,7 +71,7 @@ class sbs1ToKinesisStreamer (object):
                 (line, buffer) = buffer.split("\n", 1)
                 yield line + "\n"
             else:
-                more = self.clientsocket.recv(4096)
+                more = self.clientsocket.recv(100)
                 if not more:
                     buffering = False
                 else:
